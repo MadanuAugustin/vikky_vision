@@ -177,6 +177,5 @@ vikky_vision/
 ├── tests/                     # Unit tests (pytest)
 ├── pyproject.toml             # Package metadata, dependencies and the `vikki-vision` command
 ├── requirements.txt           # Pinned runtime dependencies
-├── requirements-dev.txt       # Runtime + test dependencies
 └── .env.example               # Template for the .env file holding your API key
 ```
