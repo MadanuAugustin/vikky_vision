@@ -9,6 +9,7 @@ Features:
   * the microphone is muted while Vikki is speaking so she doesn't hear herself through the
     speakers, but the user can still interrupt her by speaking louder than her echo (barge-in)
   * every event is logged via logger.py and all work is wrapped in try/except
+  * the conversation (CSV) and camera frames of each session are saved via session_store.py
 
 Usage:
     python liveAPI.py
@@ -22,8 +23,10 @@ import io
 import os
 import sys
 import time
+from datetime import datetime
 
 from logger import get_logger
+from session_store import SessionRecorder
 
 log = get_logger("liveAPI")
 
@@ -116,6 +119,7 @@ class LiveSession:
         self.mic_stream = None
         self.speaker_stream = None
         self.capture = None
+        self.recorder: SessionRecorder | None = None
         self.last_playback_time = 0.0
         self.user_turn_ended = False
         self.playback_epoch = 0      # bumped on every interruption; playback stops mid-chunk when it changes
@@ -136,7 +140,10 @@ class LiveSession:
                 return None
             # OpenCV captures in BGR but PIL expects RGB
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            return self._encode_jpeg(PIL.Image.fromarray(frame_rgb))
+            blob = self._encode_jpeg(PIL.Image.fromarray(frame_rgb))
+            if self.recorder is not None:
+                self.recorder.save_frame(blob.data)
+            return blob
         except Exception:
             log.exception("Failed to read camera frame")
             return None
@@ -260,6 +267,7 @@ class LiveSession:
         try:
             while True:
                 user_said, vikki_said = [], []
+                user_started = vikki_started = None
                 turn_epoch = None
                 async for response in self.session.receive():
                     if turn_epoch is None:
@@ -273,17 +281,23 @@ class LiveSession:
                         continue
                     if server_content.input_transcription and server_content.input_transcription.text:
                         user_said.append(server_content.input_transcription.text)
+                        user_started = user_started or datetime.now()
                     if server_content.output_transcription and server_content.output_transcription.text:
                         vikki_said.append(server_content.output_transcription.text)
+                        vikki_started = vikki_started or datetime.now()
                     if server_content.interrupted:
                         dropped = self._stop_playback()
                         log.info("Vikki was interrupted (dropped %d queued audio chunks)", dropped)
 
                 if user_said:
-                    log.info("User said: %s", "".join(user_said).strip())
+                    text = "".join(user_said).strip()
+                    log.info("User said: %s", text)
+                    self.recorder.add_message("User", text, user_started)
                     self.user_turn_ended = True
                 if vikki_said:
-                    log.info("%s said: %s", ASSISTANT_NAME, "".join(vikki_said).strip())
+                    text = "".join(vikki_said).strip()
+                    log.info("%s said: %s", ASSISTANT_NAME, text)
+                    self.recorder.add_message(ASSISTANT_NAME, text, vikki_started)
                 log.debug("Turn complete")
         except Exception:
             log.exception("Receiving responses failed")
@@ -334,6 +348,7 @@ class LiveSession:
             ):
                 self.session = session
                 log.info("Connected - %s is live", ASSISTANT_NAME)
+                self.recorder = SessionRecorder()
 
                 self.audio_in_queue = asyncio.Queue()
                 self.out_queue = asyncio.Queue(maxsize=5)
@@ -354,6 +369,8 @@ class LiveSession:
             log.exception("Live session failed")
         finally:
             self._close_audio()
+            if self.recorder is not None:
+                self.recorder.close()
             log.info("Session ended")
 
 
