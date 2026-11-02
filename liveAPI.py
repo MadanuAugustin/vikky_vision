@@ -1,15 +1,14 @@
 """
-Vikki Vision - live camera + voice streaming with the Gemini Live API.
+Vikki Vision - real-time camera + voice assistant.
 
-Streams the default webcam and microphone to Gemini and plays Vikki's spoken replies,
-so the whole conversation happens by voice while the model watches the camera.
+Streams the default webcam and microphone to Vikki and plays her spoken replies,
+so the whole conversation happens by voice while Vikki watches the camera.
 
-Based on Google's official google-genai Live API sample, adapted to:
-  * use `sounddevice` instead of PyAudio (PyAudio has no prebuilt wheels for newer Pythons)
-  * use the current `send_realtime_input` SDK method instead of the deprecated `send`
-  * mute the microphone while Vikki is speaking so she doesn't hear herself through the speakers,
-    but still let the user interrupt her by speaking louder than her echo (barge-in)
-  * log every event via logger.py and wrap all work in try/except
+Features:
+  * audio input/output via `sounddevice`
+  * the microphone is muted while Vikki is speaking so she doesn't hear herself through the
+    speakers, but the user can still interrupt her by speaking louder than her echo (barge-in)
+  * every event is logged via logger.py and all work is wrapped in try/except
 
 Usage:
     python liveAPI.py
@@ -57,7 +56,7 @@ BARGE_IN_MIN_RMS = float(os.environ.get("BARGE_IN_MIN_RMS", "600"))
 BARGE_IN_ECHO_FACTOR = 1.5
 ECHO_PEAK_DECAY = 0.997      # per chunk (~64 ms): the echo peak estimate halves in ~15 s
 BARGE_IN_CHUNKS = 3          # consecutive loud chunks needed (~0.2 s) to avoid triggering on clicks
-PREROLL_CHUNKS = 8           # ~0.5 s of muted mic audio sent on barge-in so Gemini hears the whole phrase
+PREROLL_CHUNKS = 8           # ~0.5 s of muted mic audio sent on barge-in so Vikki hears the whole phrase
 PLAYBACK_PIECE_BYTES = int(RECEIVE_SAMPLE_RATE * 2 * 0.05)  # write 50 ms at a time so playback stops quickly
 
 MODEL = os.environ.get("VIKKI_MODEL", "models/gemini-3.8-live")
@@ -71,8 +70,9 @@ that can see the user through their camera and talk with them in real time.
   your name is {ASSISTANT_NAME}.
 - When someone addresses you by name (e.g. "Hi {ASSISTANT_NAME}", "Hey {ASSISTANT_NAME}"),
   greet them back warmly and continue the conversation.
-- Always refer to yourself as {ASSISTANT_NAME}. Do not call yourself Gemini or say you are
-  a Google model unless the user specifically asks what technology you are built on.
+- Always refer to yourself as {ASSISTANT_NAME}, the Vikki Vision assistant. Never mention the
+  underlying AI model, the company that makes it, or the technology you are built on. If asked,
+  simply say you are {ASSISTANT_NAME} from Vikki Vision.
 """
 
 CONFIG = types.LiveConnectConfig(
@@ -207,7 +207,7 @@ class LiveSession:
                     await self.out_queue.put({"audio": blob})
                     continue
 
-                # Vikki is speaking: don't send her echo to Gemini, but watch for the user talking over her
+                # Vikki is speaking: don't send her own echo back to her, but watch for the user talking over her
                 preroll.append(blob)
                 muted_levels.append(level)
                 if level > self._barge_in_threshold():
@@ -286,7 +286,7 @@ class LiveSession:
                     log.info("%s said: %s", ASSISTANT_NAME, "".join(vikki_said).strip())
                 log.debug("Turn complete")
         except Exception:
-            log.exception("Receiving from Gemini failed")
+            log.exception("Receiving responses failed")
             raise
 
     async def play_audio(self):
@@ -326,14 +326,14 @@ class LiveSession:
                 log.exception("Error closing %s stream", name)
 
     async def run(self):
-        log.info("Connecting to %s", MODEL)
+        log.info("Connecting to %s...", ASSISTANT_NAME)
         try:
             async with (
                 self.client.aio.live.connect(model=MODEL, config=CONFIG) as session,
                 asyncio.TaskGroup() as tg,
             ):
                 self.session = session
-                log.info("Connected to Gemini Live session")
+                log.info("Connected - %s is live", ASSISTANT_NAME)
 
                 self.audio_in_queue = asyncio.Queue()
                 self.out_queue = asyncio.Queue(maxsize=5)
