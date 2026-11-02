@@ -11,7 +11,7 @@ spoken conversation with an assistant that can see what's in front of the camera
 - **Interruptions** – talk over Vikki at any time and she stops and listens.
 - **Echo protection** – Vikki's own voice coming out of the speakers isn't sent back to her, so she doesn't answer herself.
 - **Named assistant** – she introduces herself as Vikki and responds to "Hi Vikki".
-- **Logging** – every session is logged, including transcripts of what you and Vikki said.
+- **Logging** – technical events (connection, camera, microphone, errors) are logged for every session.
 - **Conversation recording** – each session's conversation is saved as a table (CSV), together with the camera frames Vikki saw.
 
 ## Requirements
@@ -95,8 +95,8 @@ Each run writes a log file to:
 logs/<YYYY-MM-DD>/vikki_vision_<HH-MM-SS>.log
 ```
 
-The log records connection events, camera/microphone status, errors, and a transcript of the conversation
-(`User said: ...` / `Vikki said: ...`).
+The log records technical events only — connection status, camera/microphone status, interruptions and errors.
+What you and Vikki say is not written to the log; it is stored in the `conversations/` folder (see below).
 
 ## Recorded conversations
 

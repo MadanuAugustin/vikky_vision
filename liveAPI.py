@@ -289,16 +289,16 @@ class LiveSession:
                         dropped = self._stop_playback()
                         log.info("Vikki was interrupted (dropped %d queued audio chunks)", dropped)
 
+                # Conversation text goes to conversations/ only; the log just records that a turn happened
                 if user_said:
-                    text = "".join(user_said).strip()
-                    log.info("User said: %s", text)
-                    self.recorder.add_message("User", text, user_started)
+                    self.recorder.add_message("User", "".join(user_said).strip(), user_started)
                     self.user_turn_ended = True
                 if vikki_said:
-                    text = "".join(vikki_said).strip()
-                    log.info("%s said: %s", ASSISTANT_NAME, text)
-                    self.recorder.add_message(ASSISTANT_NAME, text, vikki_started)
-                log.debug("Turn complete")
+                    self.recorder.add_message(ASSISTANT_NAME, "".join(vikki_said).strip(), vikki_started)
+                log.info(
+                    "Turn complete (user speech: %s, %s reply: %s)",
+                    "yes" if user_said else "no", ASSISTANT_NAME, "yes" if vikki_said else "no",
+                )
         except Exception:
             log.exception("Receiving responses failed")
             raise
