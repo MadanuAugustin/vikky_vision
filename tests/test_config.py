@@ -6,7 +6,7 @@ from vikki_vision import config
 from vikki_vision.config import ConfigError, Settings, load_settings
 
 ENV_VARS = ["VIKKI_API_KEY", "VIKKI_MODEL", "VIKKI_CAMERA_INDEX", "VIKKI_FRAME_INTERVAL",
-            "BARGE_IN_MIN_RMS", "VIKKI_DATA_DIR"]
+            "VIKKI_SHOW_PREVIEW", "BARGE_IN_MIN_RMS", "VIKKI_DATA_DIR"]
 
 
 @pytest.fixture(autouse=True)
@@ -23,7 +23,20 @@ def test_defaults(monkeypatch):
     assert settings.api_key == "abc"
     assert settings.camera_index == 0
     assert settings.barge_in_min_rms == 600.0
+    assert settings.show_preview is True
     settings.validate()
+
+
+@pytest.mark.parametrize("raw, expected", [("false", False), ("0", False), ("no", False), ("TRUE", True)])
+def test_show_preview_flag(monkeypatch, raw, expected):
+    monkeypatch.setenv("VIKKI_SHOW_PREVIEW", raw)
+    assert load_settings().show_preview is expected
+
+
+def test_invalid_bool_is_rejected(monkeypatch):
+    monkeypatch.setenv("VIKKI_SHOW_PREVIEW", "maybe")
+    with pytest.raises(ConfigError, match="VIKKI_SHOW_PREVIEW"):
+        load_settings()
 
 
 def test_overrides(monkeypatch, tmp_path):

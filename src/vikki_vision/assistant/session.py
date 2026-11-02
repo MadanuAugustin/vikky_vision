@@ -2,7 +2,7 @@
 A live conversation with Vikki.
 
 Runs five concurrent tasks for the lifetime of the session:
-  * camera     - captures a frame every few seconds and queues it for sending
+  * camera     - shows the live preview window and queues a frame for sending every few seconds
   * microphone - streams mic audio, muted while Vikki speaks except for barge-in
   * sender     - forwards queued audio/video to the live session
   * receiver   - plays Vikki's replies, handles interruptions, records the conversation
@@ -32,7 +32,12 @@ from vikki_vision.vision.camera import Camera
 log = get_logger(__name__)
 
 OUT_QUEUE_SIZE = 5
+CAMERA_POLL_SECONDS = 0.1  # how often to check whether the preview window was closed
 PREROLL_CHUNKS = 8  # ~0.5 s of muted mic audio sent on barge-in so Vikki hears the whole phrase
+
+
+class UserQuit(Exception):
+    """The user closed the preview window."""
 
 
 class VikkiSession:
@@ -41,7 +46,7 @@ class VikkiSession:
         self.client = client
         self.name = settings.assistant_name
 
-        self.camera = Camera(settings.camera_index)
+        self.camera = Camera(settings.camera_index, show_preview=settings.show_preview)
         self.microphone = Microphone()
         self.speaker: Speaker | None = None
         self.barge_in = BargeInDetector(min_rms=settings.barge_in_min_rms)
@@ -53,10 +58,15 @@ class VikkiSession:
 
     # ---------- outgoing ----------
 
+    def _status_text(self) -> str:
+        if self.speaker is not None and self.speaker.is_speaking():
+            return f"{self.name} is speaking"
+        return f"{self.name} is listening"
+
     def _capture_frame(self) -> bytes | None:
-        """Grab a JPEG frame and save it to the session recording (runs in a worker thread)."""
+        """Grab the latest frame as JPEG and save it to the session recording (runs in a worker thread)."""
         try:
-            jpeg = self.camera.read_jpeg()
+            jpeg = self.camera.latest_jpeg()
             if jpeg is not None and self.recorder is not None:
                 self.recorder.save_frame(jpeg)
             return jpeg
@@ -68,22 +78,32 @@ class VikkiSession:
         try:
             # Opening the camera can take several seconds; keep it off the event loop
             await asyncio.to_thread(self.camera.open)
+            self.camera.start(status_text=self._status_text)
+            loop = asyncio.get_running_loop()
+            next_send = loop.time()
             frames_sent = 0
             while True:
-                jpeg = await asyncio.to_thread(self._capture_frame)
-                if jpeg is None:
-                    log.warning("Camera returned no frame, stopping video stream")
+                if self.camera.user_closed:
+                    raise UserQuit()
+                if self.camera.failed:
+                    log.warning("Camera stopped delivering frames, stopping video stream")
                     break
-                await self.out_queue.put({"video": types.Blob(data=jpeg, mime_type="image/jpeg")})
-                frames_sent += 1
-                if frames_sent % 30 == 0:
-                    log.debug("Queued %d camera frames", frames_sent)
-                await asyncio.sleep(self.settings.frame_interval_seconds)
+                if loop.time() >= next_send:
+                    jpeg = await asyncio.to_thread(self._capture_frame)
+                    if jpeg is not None:
+                        await self.out_queue.put({"video": types.Blob(data=jpeg, mime_type="image/jpeg")})
+                        frames_sent += 1
+                        if frames_sent % 30 == 0:
+                            log.debug("Queued %d camera frames", frames_sent)
+                        next_send = loop.time() + self.settings.frame_interval_seconds
+                await asyncio.sleep(CAMERA_POLL_SECONDS)
+        except UserQuit:
+            raise
         except Exception:
             log.exception("Camera streaming failed")
             raise
         finally:
-            self.camera.release()
+            await asyncio.to_thread(self.camera.stop)
 
     async def stream_microphone(self):
         try:
@@ -207,12 +227,15 @@ class VikkiSession:
                 tg.create_task(self.stream_camera())
                 tg.create_task(self.receive_responses())
                 tg.create_task(self.play_audio())
-                log.info("Streaming camera and microphone - press Ctrl+C to quit")
+                log.info("Streaming camera and microphone - close the camera window or press Ctrl+C to quit")
 
         except asyncio.CancelledError:
             log.info("Session cancelled")
         except ExceptionGroup as eg:
-            for exc in eg.exceptions:
+            failures = [exc for exc in eg.exceptions if not isinstance(exc, UserQuit)]
+            if not failures:
+                log.info("User closed the camera window")
+            for exc in failures:
                 log.error("Task failed: %r", exc, exc_info=exc)
         except Exception:
             log.exception("Live session failed")

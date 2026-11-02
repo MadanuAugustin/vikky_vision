@@ -7,6 +7,8 @@ spoken conversation with an assistant that can see what's in front of the camera
 ## Features
 
 - **Live camera streaming** – sends a frame from your webcam every second so Vikki can see you and your surroundings.
+- **Live camera window** – your camera feed is shown on screen during the conversation, with a status line
+  showing whether Vikki is listening or speaking.
 - **Voice conversation** – speak naturally; Vikki answers out loud. No typing needed.
 - **Interruptions** – talk over Vikki at any time and she stops and listens.
 - **Echo protection** – Vikki's own voice coming out of the speakers isn't sent back to her, so she doesn't answer herself.
@@ -91,10 +93,11 @@ or, equivalently:
 python -m vikki_vision
 ```
 
-- The camera turns on (this can take a few seconds) and Vikki starts listening.
+- A **Vikki Vision** window opens with your live camera feed (the camera can take a few seconds to start),
+  and Vikki starts listening. The window shows whether Vikki is *listening* or *speaking*.
 - Just talk — try *"Hi Vikki, what's your name?"* or *"Vikki, what do you see?"*
 - To interrupt her, simply start speaking while she's talking.
-- Press **Ctrl+C** to quit.
+- To quit, **close the camera window** or press **Q** / **Esc** while it is focused. **Ctrl+C** in the terminal also works.
 
 ## Logs
 
@@ -136,6 +139,7 @@ Optional settings in `.env`:
 | `VIKKI_API_KEY` | – | Your API key (required) |
 | `VIKKI_CAMERA_INDEX` | `0` | Which camera to use, if you have more than one |
 | `VIKKI_FRAME_INTERVAL` | `1.0` | Seconds between camera frames sent to Vikki |
+| `VIKKI_SHOW_PREVIEW` | `true` | Show the live camera window. Set to `false` to run without it. |
 | `VIKKI_DATA_DIR` | current folder | Where the `logs/` and `conversations/` folders are created |
 | `BARGE_IN_MIN_RMS` | `600` | How loud you must speak to interrupt Vikki. Lower it if she doesn't stop when you talk; raise it if background noise cuts her off. |
 
@@ -169,7 +173,7 @@ vikky_vision/
 │   │   ├── speaker.py         # Audio playback that can be stopped instantly
 │   │   └── barge_in.py        # Detects the user talking over Vikki
 │   ├── vision/
-│   │   └── camera.py          # Webcam capture as JPEG frames
+│   │   └── camera.py          # Webcam capture and the live camera window
 │   ├── storage/
 │   │   └── session_store.py   # Saves conversation.csv and camera frames per session
 │   └── utils/

@@ -27,6 +27,7 @@ class Settings:
     voice_name: str = "Zephyr"
     camera_index: int = 0
     frame_interval_seconds: float = 1.0
+    show_preview: bool = True
     barge_in_min_rms: float = 600.0
     data_dir: Path = Path.cwd()
 
@@ -55,6 +56,18 @@ def _env_number(name: str, default, cast):
         raise ConfigError(f"{name} must be a number, got {raw!r}") from e
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    value = raw.strip().lower()
+    if value in ("1", "true", "yes", "on"):
+        return True
+    if value in ("0", "false", "no", "off"):
+        return False
+    raise ConfigError(f"{name} must be true or false, got {raw!r}")
+
+
 def load_settings() -> Settings:
     """Load settings from the environment (and .env). Call Settings.validate() before use."""
     load_dotenv(find_dotenv(usecwd=True))
@@ -63,6 +76,7 @@ def load_settings() -> Settings:
         model=os.environ.get("VIKKI_MODEL", DEFAULT_MODEL),
         camera_index=_env_number("VIKKI_CAMERA_INDEX", 0, int),
         frame_interval_seconds=_env_number("VIKKI_FRAME_INTERVAL", 1.0, float),
+        show_preview=_env_bool("VIKKI_SHOW_PREVIEW", True),
         barge_in_min_rms=_env_number("BARGE_IN_MIN_RMS", 600.0, float),
         data_dir=Path(os.environ.get("VIKKI_DATA_DIR") or Path.cwd()),
     )
