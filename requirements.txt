@@ -1,0 +1,7 @@
+google-genai==2.34.0
+opencv-python==5.0.0.93
+sounddevice==0.5.6
+numpy==2.5.4
+pillow==13.0.0
+mss==10.2.0
+python-dotenv==1.2.4
