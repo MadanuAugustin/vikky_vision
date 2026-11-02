@@ -1,8 +1,9 @@
 """
 A live conversation with Vikki.
 
-Runs five concurrent tasks for the lifetime of the session:
-  * camera     - shows the live preview window and queues a frame for sending every few seconds
+Runs six concurrent tasks for the lifetime of the session:
+  * camera     - queues the latest camera frame for sending every few seconds
+  * preview    - shows the live camera window (on the main thread, as macOS requires)
   * microphone - streams mic audio, muted while Vikki speaks except for barge-in
   * sender     - forwards queued audio/video to the live session
   * receiver   - plays Vikki's replies, handles interruptions, records the conversation
@@ -27,12 +28,14 @@ from vikki_vision.audio.speaker import Speaker
 from vikki_vision.config import Settings
 from vikki_vision.storage.session_store import SessionRecorder
 from vikki_vision.utils.logger import get_logger
-from vikki_vision.vision.camera import Camera
+from vikki_vision.vision.camera import Camera, CameraError
+from vikki_vision.vision.preview import QUIT_HINT, PreviewWindow
 
 log = get_logger(__name__)
 
 OUT_QUEUE_SIZE = 5
-CAMERA_POLL_SECONDS = 0.1  # how often to check whether the preview window was closed
+CAMERA_POLL_SECONDS = 0.1   # how often to check for a new frame / camera failure
+PREVIEW_INTERVAL_SECONDS = 1 / 30
 PREROLL_CHUNKS = 8  # ~0.5 s of muted mic audio sent on barge-in so Vikki hears the whole phrase
 
 
@@ -46,7 +49,7 @@ class VikkiSession:
         self.client = client
         self.name = settings.assistant_name
 
-        self.camera = Camera(settings.camera_index, show_preview=settings.show_preview)
+        self.camera = Camera(settings.camera_index)
         self.microphone = Microphone()
         self.speaker: Speaker | None = None
         self.barge_in = BargeInDetector(min_rms=settings.barge_in_min_rms)
@@ -63,47 +66,71 @@ class VikkiSession:
             return f"{self.name} is speaking"
         return f"{self.name} is listening"
 
-    def _capture_frame(self) -> bytes | None:
-        """Grab the latest frame as JPEG and save it to the session recording (runs in a worker thread)."""
+    def _encode_frame(self, frame) -> bytes | None:
+        """Encode a frame as JPEG and save it to the session recording (runs in a worker thread)."""
         try:
-            jpeg = self.camera.latest_jpeg()
-            if jpeg is not None and self.recorder is not None:
+            jpeg = self.camera.encode_jpeg(frame)
+            if self.recorder is not None:
                 self.recorder.save_frame(jpeg)
             return jpeg
         except Exception:
-            log.exception("Failed to read camera frame")
+            log.exception("Failed to encode camera frame")
             return None
 
     async def stream_camera(self):
         try:
             # Opening the camera can take several seconds; keep it off the event loop
             await asyncio.to_thread(self.camera.open)
-            self.camera.start(status_text=self._status_text)
-            loop = asyncio.get_running_loop()
-            next_send = loop.time()
+            self.camera.start()
+            last_seq = 0
             frames_sent = 0
             while True:
-                if self.camera.user_closed:
-                    raise UserQuit()
                 if self.camera.failed:
-                    log.warning("Camera stopped delivering frames, stopping video stream")
-                    break
-                if loop.time() >= next_send:
-                    jpeg = await asyncio.to_thread(self._capture_frame)
-                    if jpeg is not None:
-                        await self.out_queue.put({"video": types.Blob(data=jpeg, mime_type="image/jpeg")})
-                        frames_sent += 1
-                        if frames_sent % 30 == 0:
-                            log.debug("Queued %d camera frames", frames_sent)
-                        next_send = loop.time() + self.settings.frame_interval_seconds
-                await asyncio.sleep(CAMERA_POLL_SECONDS)
-        except UserQuit:
-            raise
+                    # Without video (and the preview window) the session can't work as intended
+                    raise CameraError("Camera stopped delivering frames")
+                seq, frame = self.camera.latest_frame()
+                if frame is None or seq == last_seq:
+                    # No new frame yet: don't resend (or re-record) a stale one
+                    await asyncio.sleep(CAMERA_POLL_SECONDS)
+                    continue
+                last_seq = seq
+                jpeg = await asyncio.to_thread(self._encode_frame, frame)
+                if jpeg is not None:
+                    await self.out_queue.put({"video": types.Blob(data=jpeg, mime_type="image/jpeg")})
+                    frames_sent += 1
+                    if frames_sent % 30 == 0:
+                        log.debug("Queued %d camera frames", frames_sent)
+                await asyncio.sleep(self.settings.frame_interval_seconds)
         except Exception:
             log.exception("Camera streaming failed")
             raise
         finally:
+            # Also covers cancellation while the camera is still opening: Camera.open() then
+            # releases the device itself once it sees the stop request
             await asyncio.to_thread(self.camera.stop)
+
+    async def show_preview(self):
+        """Draw the live camera window. Runs on the event loop, i.e. the main thread."""
+        window = PreviewWindow()
+        try:
+            while True:
+                _, frame = self.camera.latest_frame()
+                if frame is not None:
+                    try:
+                        keep_open = window.show(frame, [self._status_text(), QUIT_HINT])
+                    except Exception:
+                        # The window is a convenience: keep the conversation (and video to Vikki) going
+                        log.exception("Camera window failed; continuing without it - press Ctrl+C to quit")
+                        return
+                    if not keep_open:
+                        log.info("Camera window closed by the user")
+                        raise UserQuit()
+                await asyncio.sleep(PREVIEW_INTERVAL_SECONDS)
+        finally:
+            try:
+                window.close()
+            except Exception:
+                log.exception("Error closing camera window")
 
     async def stream_microphone(self):
         try:
@@ -225,9 +252,15 @@ class VikkiSession:
                 tg.create_task(self.send_realtime())
                 tg.create_task(self.stream_microphone())
                 tg.create_task(self.stream_camera())
+                if self.settings.show_preview:
+                    tg.create_task(self.show_preview())
                 tg.create_task(self.receive_responses())
                 tg.create_task(self.play_audio())
-                log.info("Streaming camera and microphone - close the camera window or press Ctrl+C to quit")
+                log.info(
+                    "Streaming camera and microphone - %s",
+                    "close the camera window or press Ctrl+C to quit" if self.settings.show_preview
+                    else "press Ctrl+C to quit",
+                )
 
         except asyncio.CancelledError:
             log.info("Session cancelled")
