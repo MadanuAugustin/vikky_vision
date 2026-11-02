@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vikki-vision"
+version = "0.1.0"
+description = "Vikki Vision - real-time camera + voice assistant"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "google-genai==2.34.0",
+    "opencv-python==5.0.0.93",
+    "sounddevice==0.5.6",
+    "numpy==2.5.4",
+    "pillow==13.0.0",
+    "python-dotenv==1.2.4",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+vikki-vision = "vikki_vision.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

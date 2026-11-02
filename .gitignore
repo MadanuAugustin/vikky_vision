@@ -25,3 +25,9 @@ AGENTS.MD
 
 # Recorded conversations and camera frames (personal data)
 conversations/
+
+# Build / test artifacts
+*.egg-info/
+build/
+dist/
+.pytest_cache/

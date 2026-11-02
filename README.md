@@ -48,11 +48,14 @@ spoken conversation with an assistant that can see what's in front of the camera
    source .venv/bin/activate
    ```
 
-3. **Install the dependencies**
+3. **Install Vikki Vision and its dependencies**
 
    ```bash
-   pip install -r requirements.txt
+   pip install -e .
    ```
+
+   This installs the `vikki_vision` package from `src/` together with everything in `requirements.txt`,
+   and adds the `vikki-vision` command. For development (includes the test tools), use `pip install -e ".[dev]"`.
 
 4. **Add your API key**
 
@@ -76,10 +79,16 @@ spoken conversation with an assistant that can see what's in front of the camera
 
 ## Running Vikki Vision
 
-With the virtual environment active:
+From the project folder, with the virtual environment active:
 
 ```bash
-python liveAPI.py
+vikki-vision
+```
+
+or, equivalently:
+
+```bash
+python -m vikki_vision
 ```
 
 - The camera turns on (this can take a few seconds) and Vikki starts listening.
@@ -125,20 +134,49 @@ Optional settings in `.env`:
 | Variable | Default | Description |
 |---|---|---|
 | `VIKKI_API_KEY` | – | Your API key (required) |
+| `VIKKI_CAMERA_INDEX` | `0` | Which camera to use, if you have more than one |
+| `VIKKI_FRAME_INTERVAL` | `1.0` | Seconds between camera frames sent to Vikki |
+| `VIKKI_DATA_DIR` | current folder | Where the `logs/` and `conversations/` folders are created |
 | `BARGE_IN_MIN_RMS` | `600` | How loud you must speak to interrupt Vikki. Lower it if she doesn't stop when you talk; raise it if background noise cuts her off. |
 
 ## Troubleshooting
 
 - **`VIKKI_API_KEY is not set`** – create `.env` as described in step 4.
-- **`Could not open the default camera`** – close other apps using the webcam (Zoom, Teams, Camera) and check your OS camera privacy settings.
+- **`Could not open camera 0`** – close other apps using the webcam (Zoom, Teams, Camera) and check your OS camera privacy settings.
 - **Vikki responds to things nobody said** – background noise or speaker echo is reaching the mic. Using headphones gives the best experience.
+
+## Running the tests
+
+```bash
+pip install -e ".[dev]"
+pytest
+```
 
 ## Project structure
 
 ```
-liveAPI.py         Main application: camera + microphone streaming and audio playback
-logger.py          Logging setup (per-run log files under logs/)
-session_store.py   Saves each session's conversation (CSV) and camera frames under conversations/
-requirements.txt   Python dependencies
-.env.example       Template for the .env file holding your API key
+vikky_vision/
+├── src/vikki_vision/
+│   ├── __main__.py            # `python -m vikki_vision`
+│   ├── app.py                 # Entry point: loads settings, sets up logging, starts the session
+│   ├── config.py              # Settings loaded from environment variables / .env
+│   ├── assistant/
+│   │   ├── client.py          # API client and live session configuration
+│   │   ├── prompts.py         # Vikki's identity and behaviour instructions
+│   │   └── session.py         # Live conversation: runs camera, mic, speaker and response tasks
+│   ├── audio/
+│   │   ├── microphone.py      # Microphone input
+│   │   ├── speaker.py         # Audio playback that can be stopped instantly
+│   │   └── barge_in.py        # Detects the user talking over Vikki
+│   ├── vision/
+│   │   └── camera.py          # Webcam capture as JPEG frames
+│   ├── storage/
+│   │   └── session_store.py   # Saves conversation.csv and camera frames per session
+│   └── utils/
+│       └── logger.py          # Per-run log files (technical events only)
+├── tests/                     # Unit tests (pytest)
+├── pyproject.toml             # Package metadata, dependencies and the `vikki-vision` command
+├── requirements.txt           # Pinned runtime dependencies
+├── requirements-dev.txt       # Runtime + test dependencies
+└── .env.example               # Template for the .env file holding your API key
 ```
