@@ -12,6 +12,7 @@ spoken conversation with an assistant that can see what's in front of the camera
 - **Echo protection** – Vikki's own voice coming out of the speakers isn't sent back to her, so she doesn't answer herself.
 - **Named assistant** – she introduces herself as Vikki and responds to "Hi Vikki".
 - **Logging** – every session is logged, including transcripts of what you and Vikki said.
+- **Conversation recording** – each session's conversation is saved as a table (CSV), together with the camera frames Vikki saw.
 
 ## Requirements
 
@@ -97,6 +98,26 @@ logs/<YYYY-MM-DD>/vikki_vision_<HH-MM-SS>.log
 The log records connection events, camera/microphone status, errors, and a transcript of the conversation
 (`User said: ...` / `Vikki said: ...`).
 
+## Recorded conversations
+
+Every session is saved to its own folder:
+
+```
+conversations/<YYYY-MM-DD>/<HH-MM-SS>/
+    conversation.csv
+    frames/frame_000001.jpg, frame_000002.jpg, ...
+```
+
+`conversation.csv` opens in Excel and has one row per line spoken:
+
+| timestamp | speaker | text | camera_frame |
+|---|---|---|---|
+| 2026-11-02 10:20:59 | User | What's your name? | frames/frame_000016.jpg |
+| 2026-11-02 10:20:59 | Vikki | I'm Vikki, your Vikki Vision assistant. How can I help you? | frames/frame_000016.jpg |
+
+`camera_frame` is the camera image Vikki was looking at when that line was spoken. Frames are saved once per
+second (about 100 MB per hour). The `conversations/` folder is excluded from git, since it contains personal data.
+
 ## Configuration
 
 Optional settings in `.env`:
@@ -117,6 +138,7 @@ Optional settings in `.env`:
 ```
 liveAPI.py         Main application: camera + microphone streaming and audio playback
 logger.py          Logging setup (per-run log files under logs/)
+session_store.py   Saves each session's conversation (CSV) and camera frames under conversations/
 requirements.txt   Python dependencies
 .env.example       Template for the .env file holding your API key
 ```
