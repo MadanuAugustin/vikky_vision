@@ -7,7 +7,8 @@ so the whole conversation happens by voice while the model watches the camera.
 Based on Google's official google-genai Live API sample, adapted to:
   * use `sounddevice` instead of PyAudio (PyAudio has no prebuilt wheels for newer Pythons)
   * use the current `send_realtime_input` SDK method instead of the deprecated `send`
-  * mute the microphone while Vikki is speaking so she doesn't hear herself through the speakers
+  * mute the microphone while Vikki is speaking so she doesn't hear herself through the speakers,
+    but still let the user interrupt her by speaking louder than her echo (barge-in)
   * log every event via logger.py and wrap all work in try/except
 
 Usage:
@@ -17,6 +18,7 @@ Press Ctrl+C to quit.
 """
 
 import asyncio
+import collections
 import io
 import os
 import sys
@@ -28,6 +30,7 @@ log = get_logger("liveAPI")
 
 try:
     import cv2
+    import numpy as np
     import PIL.Image
     import sounddevice as sd
     from dotenv import load_dotenv
@@ -46,6 +49,16 @@ CHUNK_SIZE = 1024
 FRAME_INTERVAL_SECONDS = 1.0
 # Keep the mic muted this long after Vikki's last audio chunk, to cover speaker latency/room echo
 MIC_UNMUTE_DELAY_SECONDS = 0.6
+
+# Barge-in: while Vikki talks, the user interrupts her by speaking louder than her echo.
+# A mic chunk (int16 RMS) counts as user speech when it exceeds
+# max(BARGE_IN_MIN_RMS, BARGE_IN_ECHO_FACTOR * recent peak echo level).
+BARGE_IN_MIN_RMS = float(os.environ.get("BARGE_IN_MIN_RMS", "600"))
+BARGE_IN_ECHO_FACTOR = 1.5
+ECHO_PEAK_DECAY = 0.997      # per chunk (~64 ms): the echo peak estimate halves in ~15 s
+BARGE_IN_CHUNKS = 3          # consecutive loud chunks needed (~0.2 s) to avoid triggering on clicks
+PREROLL_CHUNKS = 8           # ~0.5 s of muted mic audio sent on barge-in so Gemini hears the whole phrase
+PLAYBACK_PIECE_BYTES = int(RECEIVE_SAMPLE_RATE * 2 * 0.05)  # write 50 ms at a time so playback stops quickly
 
 MODEL = os.environ.get("GEMINI_MODEL", "models/gemini-3.8-live")
 ASSISTANT_NAME = "Vikki"
@@ -80,6 +93,11 @@ CONFIG = types.LiveConnectConfig(
 )
 
 
+def _rms(pcm: bytes) -> float:
+    samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
+    return float(np.sqrt(np.mean(samples * samples))) if samples.size else 0.0
+
+
 def create_client() -> genai.Client:
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key or api_key == "your-gemini-api-key-here":
@@ -99,6 +117,9 @@ class LiveSession:
         self.speaker_stream = None
         self.capture = None
         self.last_playback_time = 0.0
+        self.user_turn_ended = False
+        self.playback_epoch = 0      # bumped on every interruption; playback stops mid-chunk when it changes
+        self.echo_peak = 0.0
 
     # ---------- outgoing ----------
 
@@ -158,17 +179,65 @@ class LiveSession:
             self.mic_stream.start()
             log.info("Microphone opened: %s", sd.query_devices(kind="input")["name"])
 
+            preroll = collections.deque(maxlen=PREROLL_CHUNKS)
+            loud_chunks = 0
+            muted_levels = []
+            open_mic_peak = 0.0
             while True:
                 data, overflowed = await asyncio.to_thread(self.mic_stream.read, CHUNK_SIZE)
                 if overflowed:
                     log.debug("Microphone input overflow")
-                if self._vikki_is_speaking():
-                    continue
                 blob = types.Blob(data=bytes(data), mime_type=f"audio/pcm;rate={SEND_SAMPLE_RATE}")
-                await self.out_queue.put({"audio": blob})
+
+                level = _rms(data)
+                if not self._vikki_is_speaking():
+                    open_mic_peak = max(open_mic_peak, level)
+                    if muted_levels:
+                        log.debug(
+                            "Mic level while Vikki spoke: median=%.0f max=%.0f (barge-in threshold %.0f)",
+                            float(np.median(muted_levels)), max(muted_levels), self._barge_in_threshold(),
+                        )
+                        muted_levels = []
+                    if self.user_turn_ended:
+                        log.debug("Mic peak level while the user had the floor: %.0f", open_mic_peak)
+                        open_mic_peak = 0.0
+                        self.user_turn_ended = False
+                    preroll.clear()
+                    loud_chunks = 0
+                    await self.out_queue.put({"audio": blob})
+                    continue
+
+                # Vikki is speaking: don't send her echo to Gemini, but watch for the user talking over her
+                preroll.append(blob)
+                muted_levels.append(level)
+                if level > self._barge_in_threshold():
+                    loud_chunks += 1
+                else:
+                    loud_chunks = 0
+                    self.echo_peak = max(level, self.echo_peak * ECHO_PEAK_DECAY)
+
+                if loud_chunks >= BARGE_IN_CHUNKS:
+                    log.info("User started talking over Vikki (mic level %.0f) - interrupting", level)
+                    self._stop_playback()
+                    while preroll:
+                        await self.out_queue.put({"audio": preroll.popleft()})
+                    loud_chunks = 0
         except Exception:
             log.exception("Microphone streaming failed")
             raise
+
+    def _barge_in_threshold(self) -> float:
+        return max(BARGE_IN_MIN_RMS, BARGE_IN_ECHO_FACTOR * self.echo_peak)
+
+    def _stop_playback(self) -> int:
+        """Silence Vikki now: drop queued audio and unmute the mic. Returns chunks dropped."""
+        self.playback_epoch += 1
+        dropped = 0
+        while not self.audio_in_queue.empty():
+            self.audio_in_queue.get_nowait()
+            dropped += 1
+        self.last_playback_time = 0.0
+        return dropped
 
     def _vikki_is_speaking(self) -> bool:
         if self.audio_in_queue is not None and not self.audio_in_queue.empty():
@@ -191,8 +260,12 @@ class LiveSession:
         try:
             while True:
                 user_said, vikki_said = [], []
+                turn_epoch = None
                 async for response in self.session.receive():
-                    if data := response.data:
+                    if turn_epoch is None:
+                        turn_epoch = self.playback_epoch
+                    # After a local barge-in, discard the rest of the interrupted reply
+                    if (data := response.data) and self.playback_epoch == turn_epoch:
                         self.audio_in_queue.put_nowait(data)
 
                     server_content = response.server_content
@@ -203,15 +276,12 @@ class LiveSession:
                     if server_content.output_transcription and server_content.output_transcription.text:
                         vikki_said.append(server_content.output_transcription.text)
                     if server_content.interrupted:
-                        # Stop playback immediately by dropping audio that hasn't played yet
-                        dropped = 0
-                        while not self.audio_in_queue.empty():
-                            self.audio_in_queue.get_nowait()
-                            dropped += 1
+                        dropped = self._stop_playback()
                         log.info("Vikki was interrupted (dropped %d queued audio chunks)", dropped)
 
                 if user_said:
                     log.info("User said: %s", "".join(user_said).strip())
+                    self.user_turn_ended = True
                 if vikki_said:
                     log.info("%s said: %s", ASSISTANT_NAME, "".join(vikki_said).strip())
                 log.debug("Turn complete")
@@ -231,9 +301,14 @@ class LiveSession:
 
             while True:
                 chunk = await self.audio_in_queue.get()
-                self.last_playback_time = time.monotonic()
-                await asyncio.to_thread(self.speaker_stream.write, chunk)
-                self.last_playback_time = time.monotonic()
+                epoch = self.playback_epoch
+                for start in range(0, len(chunk), PLAYBACK_PIECE_BYTES):
+                    if self.playback_epoch != epoch:
+                        break  # interrupted mid-chunk
+                    self.last_playback_time = time.monotonic()
+                    await asyncio.to_thread(self.speaker_stream.write, chunk[start:start + PLAYBACK_PIECE_BYTES])
+                    if self.playback_epoch == epoch:
+                        self.last_playback_time = time.monotonic()
         except Exception:
             log.exception("Audio playback failed")
             raise
