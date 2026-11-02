@@ -173,7 +173,8 @@ vikky_vision/
 │   │   ├── speaker.py         # Audio playback that can be stopped instantly
 │   │   └── barge_in.py        # Detects the user talking over Vikki
 │   ├── vision/
-│   │   └── camera.py          # Webcam capture and the live camera window
+│   │   ├── camera.py          # Webcam capture on a background thread
+│   │   └── preview.py         # Live camera window (drawn from the main thread)
 │   ├── storage/
 │   │   └── session_store.py   # Saves conversation.csv and camera frames per session
 │   └── utils/

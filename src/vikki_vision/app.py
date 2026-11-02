@@ -4,7 +4,7 @@ Entry point for Vikki Vision.
     vikki-vision            (console command installed with the package)
     python -m vikki_vision
 
-Press Ctrl+C to quit.
+To quit, close the camera window, press Q / Esc while it is focused, or press Ctrl+C.
 """
 
 import asyncio
