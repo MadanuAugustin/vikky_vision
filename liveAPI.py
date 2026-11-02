@@ -1,13 +1,14 @@
 """
 Vikki Vision - live camera + voice streaming with the Gemini Live API.
 
-Based on Google's official google-genai Live API sample (see ai_studio_code.py),
-adapted to:
-  * use `sounddevice` instead of PyAudio (PyAudio has no prebuilt wheels for newer Pythons)
-  * use the current `send_realtime_input` SDK methods instead of the deprecated `send`
-  * log every event via logger.py and wrap all work in try/except
+Streams the default webcam and microphone to Gemini and plays Vikki's spoken replies,
+so the whole conversation happens by voice while the model watches the camera.
 
-Streams the default webcam and microphone to Gemini and plays the spoken replies.
+Based on Google's official google-genai Live API sample, adapted to:
+  * use `sounddevice` instead of PyAudio (PyAudio has no prebuilt wheels for newer Pythons)
+  * use the current `send_realtime_input` SDK method instead of the deprecated `send`
+  * mute the microphone while Vikki is speaking so she doesn't hear herself through the speakers
+  * log every event via logger.py and wrap all work in try/except
 
 Usage:
     python liveAPI.py
@@ -19,6 +20,7 @@ import asyncio
 import io
 import os
 import sys
+import time
 
 from logger import get_logger
 
@@ -42,6 +44,8 @@ SEND_SAMPLE_RATE = 16000
 RECEIVE_SAMPLE_RATE = 24000
 CHUNK_SIZE = 1024
 FRAME_INTERVAL_SECONDS = 1.0
+# Keep the mic muted this long after Vikki's last audio chunk, to cover speaker latency/room echo
+MIC_UNMUTE_DELAY_SECONDS = 0.6
 
 MODEL = os.environ.get("GEMINI_MODEL", "models/gemini-3.8-live")
 ASSISTANT_NAME = "Vikki"
@@ -61,6 +65,7 @@ that can see the user through their camera and talk with them in real time.
 CONFIG = types.LiveConnectConfig(
     system_instruction=SYSTEM_INSTRUCTION,
     response_modalities=["AUDIO"],
+    input_audio_transcription=types.AudioTranscriptionConfig(),
     output_audio_transcription=types.AudioTranscriptionConfig(),
     media_resolution="MEDIA_RESOLUTION_MEDIUM",
     speech_config=types.SpeechConfig(
@@ -93,6 +98,7 @@ class LiveSession:
         self.mic_stream = None
         self.speaker_stream = None
         self.capture = None
+        self.last_playback_time = 0.0
 
     # ---------- outgoing ----------
 
@@ -156,11 +162,18 @@ class LiveSession:
                 data, overflowed = await asyncio.to_thread(self.mic_stream.read, CHUNK_SIZE)
                 if overflowed:
                     log.debug("Microphone input overflow")
+                if self._vikki_is_speaking():
+                    continue
                 blob = types.Blob(data=bytes(data), mime_type=f"audio/pcm;rate={SEND_SAMPLE_RATE}")
                 await self.out_queue.put({"audio": blob})
         except Exception:
             log.exception("Microphone streaming failed")
             raise
+
+    def _vikki_is_speaking(self) -> bool:
+        if self.audio_in_queue is not None and not self.audio_in_queue.empty():
+            return True
+        return time.monotonic() - self.last_playback_time < MIC_UNMUTE_DELAY_SECONDS
 
     async def send_realtime(self):
         try:
@@ -177,31 +190,31 @@ class LiveSession:
         """Read from the websocket and push PCM chunks to the playback queue."""
         try:
             while True:
-                transcript = []
+                user_said, vikki_said = [], []
                 async for response in self.session.receive():
-                    server_content = response.server_content
-                    if server_content is not None:
-                        if server_content.output_transcription and server_content.output_transcription.text:
-                            transcript.append(server_content.output_transcription.text)
-                        if server_content.interrupted:
-                            log.info("Model was interrupted by the user")
-
                     if data := response.data:
                         self.audio_in_queue.put_nowait(data)
+
+                    server_content = response.server_content
+                    if server_content is None:
                         continue
-                    if text := response.text:
-                        print(text, end="", flush=True)
+                    if server_content.input_transcription and server_content.input_transcription.text:
+                        user_said.append(server_content.input_transcription.text)
+                    if server_content.output_transcription and server_content.output_transcription.text:
+                        vikki_said.append(server_content.output_transcription.text)
+                    if server_content.interrupted:
+                        # Stop playback immediately by dropping audio that hasn't played yet
+                        dropped = 0
+                        while not self.audio_in_queue.empty():
+                            self.audio_in_queue.get_nowait()
+                            dropped += 1
+                        log.info("Vikki was interrupted (dropped %d queued audio chunks)", dropped)
 
-                if transcript:
-                    log.info("%s said: %s", ASSISTANT_NAME, "".join(transcript).strip())
-
-                # The turn is complete (or interrupted): drop any audio not yet
-                # played so an interruption stops playback immediately.
-                dropped = 0
-                while not self.audio_in_queue.empty():
-                    self.audio_in_queue.get_nowait()
-                    dropped += 1
-                log.debug("Turn complete (dropped %d queued audio chunks)", dropped)
+                if user_said:
+                    log.info("User said: %s", "".join(user_said).strip())
+                if vikki_said:
+                    log.info("%s said: %s", ASSISTANT_NAME, "".join(vikki_said).strip())
+                log.debug("Turn complete")
         except Exception:
             log.exception("Receiving from Gemini failed")
             raise
@@ -218,7 +231,9 @@ class LiveSession:
 
             while True:
                 chunk = await self.audio_in_queue.get()
+                self.last_playback_time = time.monotonic()
                 await asyncio.to_thread(self.speaker_stream.write, chunk)
+                self.last_playback_time = time.monotonic()
         except Exception:
             log.exception("Audio playback failed")
             raise
