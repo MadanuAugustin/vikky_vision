@@ -1,8 +1,8 @@
 # Vikki Vision
 
-Vikki Vision is a real-time voice and vision assistant built on Google's **Gemini 3.8 Live** API.
-It streams your webcam and microphone to Gemini, and **Vikki** talks back through your speakers —
-so you can hold a natural spoken conversation with an assistant that can see what's in front of the camera.
+Vikki Vision is a real-time voice and vision assistant. Turn it on, and **Vikki** watches through your
+webcam, listens through your microphone and talks back through your speakers — so you can hold a natural
+spoken conversation with an assistant that can see what's in front of the camera.
 
 ## Features
 
@@ -17,7 +17,7 @@ so you can hold a natural spoken conversation with an assistant that can see wha
 
 - Windows, macOS or Linux with a **webcam**, **microphone** and **speakers/headphones**
 - **Python 3.11 or newer** (tested on Python 3.14)
-- A **Gemini API key** from [Google AI Studio](https://aistudio.google.com/apikey)
+- A **Vikki Vision API key**
 
 ## Setup
 
@@ -53,7 +53,7 @@ so you can hold a natural spoken conversation with an assistant that can see wha
    pip install -r requirements.txt
    ```
 
-4. **Add your Gemini API key**
+4. **Add your API key**
 
    Copy `.env.example` to `.env`:
 
@@ -65,10 +65,10 @@ so you can hold a natural spoken conversation with an assistant that can see wha
    cp .env.example .env        # macOS / Linux
    ```
 
-   Then open `.env` and replace `your-gemini-api-key-here` with your key:
+   Then open `.env` and replace `your-api-key-here` with your key:
 
    ```
-   GEMINI_API_KEY=your-actual-key
+   VIKKI_API_KEY=your-actual-key
    ```
 
    `.env` is listed in `.gitignore`, so your key is never committed.
@@ -103,13 +103,12 @@ Optional settings in `.env`:
 
 | Variable | Default | Description |
 |---|---|---|
-| `GEMINI_API_KEY` | – | Your Gemini API key (required) |
-| `GEMINI_MODEL` | `models/gemini-3.8-live` | Gemini Live model to use |
+| `VIKKI_API_KEY` | – | Your API key (required) |
 | `BARGE_IN_MIN_RMS` | `600` | How loud you must speak to interrupt Vikki. Lower it if she doesn't stop when you talk; raise it if background noise cuts her off. |
 
 ## Troubleshooting
 
-- **`GEMINI_API_KEY is not set`** – create `.env` as described in step 4.
+- **`VIKKI_API_KEY is not set`** – create `.env` as described in step 4.
 - **`Could not open the default camera`** – close other apps using the webcam (Zoom, Teams, Camera) and check your OS camera privacy settings.
 - **Vikki responds to things nobody said** – background noise or speaker echo is reaching the mic. Using headphones gives the best experience.
 

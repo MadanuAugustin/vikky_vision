@@ -60,7 +60,7 @@ BARGE_IN_CHUNKS = 3          # consecutive loud chunks needed (~0.2 s) to avoid 
 PREROLL_CHUNKS = 8           # ~0.5 s of muted mic audio sent on barge-in so Gemini hears the whole phrase
 PLAYBACK_PIECE_BYTES = int(RECEIVE_SAMPLE_RATE * 2 * 0.05)  # write 50 ms at a time so playback stops quickly
 
-MODEL = os.environ.get("GEMINI_MODEL", "models/gemini-3.8-live")
+MODEL = os.environ.get("VIKKI_MODEL", "models/gemini-3.8-live")
 ASSISTANT_NAME = "Vikki"
 
 SYSTEM_INSTRUCTION = f"""\
@@ -99,9 +99,9 @@ def _rms(pcm: bytes) -> float:
 
 
 def create_client() -> genai.Client:
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key or api_key == "your-gemini-api-key-here":
-        raise RuntimeError("GEMINI_API_KEY is not set. Add it to the .env file (see .env.example).")
+    api_key = os.environ.get("VIKKI_API_KEY")
+    if not api_key or api_key == "your-api-key-here":
+        raise RuntimeError("VIKKI_API_KEY is not set. Add it to the .env file (see .env.example).")
     return genai.Client(http_options={"api_version": "v1beta"}, api_key=api_key)
 
 
