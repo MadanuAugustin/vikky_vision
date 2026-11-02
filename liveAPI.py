@@ -1,5 +1,5 @@
 """
-Vikki Vision - live camera / screen + voice streaming with the Gemini Live API.
+Vikki Vision - live camera + voice streaming with the Gemini Live API.
 
 Based on Google's official google-genai Live API sample (see ai_studio_code.py),
 adapted to:
@@ -7,15 +7,14 @@ adapted to:
   * use the current `send_realtime_input` SDK methods instead of the deprecated `send`
   * log every event via logger.py and wrap all work in try/except
 
-Usage:
-    python liveAPI.py --mode camera   # webcam + mic (default)
-    python liveAPI.py --mode screen   # screen capture + mic
-    python liveAPI.py --mode none     # mic / text only
+Streams the default webcam and microphone to Gemini and plays the spoken replies.
 
-Type a message and press Enter to send text; type 'q' to quit.
+Usage:
+    python liveAPI.py
+
+Press Ctrl+C to quit.
 """
 
-import argparse
 import asyncio
 import io
 import os
@@ -45,10 +44,24 @@ CHUNK_SIZE = 1024
 FRAME_INTERVAL_SECONDS = 1.0
 
 MODEL = os.environ.get("GEMINI_MODEL", "models/gemini-3.8-live")
-DEFAULT_MODE = "camera"
+ASSISTANT_NAME = "Vikki"
+
+SYSTEM_INSTRUCTION = f"""\
+Your name is {ASSISTANT_NAME}. You are a friendly, helpful live vision and voice assistant
+that can see the user through their camera and talk with them in real time.
+
+- Whenever someone asks your name (e.g. "what's your name?", "who are you?"), answer that
+  your name is {ASSISTANT_NAME}.
+- When someone addresses you by name (e.g. "Hi {ASSISTANT_NAME}", "Hey {ASSISTANT_NAME}"),
+  greet them back warmly and continue the conversation.
+- Always refer to yourself as {ASSISTANT_NAME}. Do not call yourself Gemini or say you are
+  a Google model unless the user specifically asks what technology you are built on.
+"""
 
 CONFIG = types.LiveConnectConfig(
+    system_instruction=SYSTEM_INSTRUCTION,
     response_modalities=["AUDIO"],
+    output_audio_transcription=types.AudioTranscriptionConfig(),
     media_resolution="MEDIA_RESOLUTION_MEDIUM",
     speech_config=types.SpeechConfig(
         voice_config=types.VoiceConfig(
@@ -70,9 +83,8 @@ def create_client() -> genai.Client:
 
 
 class LiveSession:
-    def __init__(self, client: genai.Client, video_mode: str = DEFAULT_MODE):
+    def __init__(self, client: genai.Client):
         self.client = client
-        self.video_mode = video_mode
 
         self.session = None
         self.audio_in_queue: asyncio.Queue | None = None
@@ -83,22 +95,6 @@ class LiveSession:
         self.capture = None
 
     # ---------- outgoing ----------
-
-    async def send_text(self):
-        try:
-            while True:
-                text = await asyncio.to_thread(input, "message > ")
-                if text.strip().lower() == "q":
-                    log.info("User requested exit")
-                    break
-                if self.session is not None:
-                    await self.session.send_realtime_input(text=text or ".")
-                    log.info("Sent text message (%d chars)", len(text))
-        except EOFError:
-            log.info("Input closed, exiting")
-        except Exception:
-            log.exception("send_text failed")
-            raise
 
     def _encode_jpeg(self, img: "PIL.Image.Image") -> types.Blob:
         img.thumbnail((1024, 1024))
@@ -145,33 +141,6 @@ class LiveSession:
                 self.capture.release()
                 log.info("Camera released")
 
-    def _get_screen(self):
-        try:
-            import mss
-            import mss.tools
-
-            with mss.mss() as sct:
-                shot = sct.grab(sct.monitors[0])
-                png_bytes = mss.tools.to_png(shot.rgb, shot.size)
-            img = PIL.Image.open(io.BytesIO(png_bytes)).convert("RGB")
-            return self._encode_jpeg(img)
-        except Exception:
-            log.exception("Failed to capture screen")
-            return None
-
-    async def get_screen(self):
-        try:
-            log.info("Screen capture started")
-            while True:
-                frame = await asyncio.to_thread(self._get_screen)
-                if frame is None:
-                    break
-                await self.out_queue.put({"video": frame})
-                await asyncio.sleep(FRAME_INTERVAL_SECONDS)
-        except Exception:
-            log.exception("Screen streaming failed")
-            raise
-
     async def listen_audio(self):
         try:
             self.mic_stream = sd.RawInputStream(
@@ -208,16 +177,23 @@ class LiveSession:
         """Read from the websocket and push PCM chunks to the playback queue."""
         try:
             while True:
+                transcript = []
                 async for response in self.session.receive():
+                    server_content = response.server_content
+                    if server_content is not None:
+                        if server_content.output_transcription and server_content.output_transcription.text:
+                            transcript.append(server_content.output_transcription.text)
+                        if server_content.interrupted:
+                            log.info("Model was interrupted by the user")
+
                     if data := response.data:
                         self.audio_in_queue.put_nowait(data)
                         continue
                     if text := response.text:
                         print(text, end="", flush=True)
 
-                    server_content = response.server_content
-                    if server_content is not None and server_content.interrupted:
-                        log.info("Model was interrupted by the user")
+                if transcript:
+                    log.info("%s said: %s", ASSISTANT_NAME, "".join(transcript).strip())
 
                 # The turn is complete (or interrupted): drop any audio not yet
                 # played so an interruption stops playback immediately.
@@ -260,7 +236,7 @@ class LiveSession:
                 log.exception("Error closing %s stream", name)
 
     async def run(self):
-        log.info("Connecting to %s (mode=%s)", MODEL, self.video_mode)
+        log.info("Connecting to %s", MODEL)
         try:
             async with (
                 self.client.aio.live.connect(model=MODEL, config=CONFIG) as session,
@@ -272,18 +248,12 @@ class LiveSession:
                 self.audio_in_queue = asyncio.Queue()
                 self.out_queue = asyncio.Queue(maxsize=5)
 
-                send_text_task = tg.create_task(self.send_text())
                 tg.create_task(self.send_realtime())
                 tg.create_task(self.listen_audio())
-                if self.video_mode == "camera":
-                    tg.create_task(self.get_frames())
-                elif self.video_mode == "screen":
-                    tg.create_task(self.get_screen())
+                tg.create_task(self.get_frames())
                 tg.create_task(self.receive_audio())
                 tg.create_task(self.play_audio())
-
-                await send_text_task
-                raise asyncio.CancelledError("User requested exit")
+                log.info("Streaming camera and microphone - press Ctrl+C to quit")
 
         except asyncio.CancelledError:
             log.info("Session cancelled")
@@ -298,19 +268,9 @@ class LiveSession:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Vikki Vision - Gemini Live camera/screen streaming")
-    parser.add_argument(
-        "--mode",
-        type=str,
-        default=DEFAULT_MODE,
-        choices=["camera", "screen", "none"],
-        help="pixels to stream from",
-    )
-    args = parser.parse_args()
-
     try:
         client = create_client()
-        asyncio.run(LiveSession(client, video_mode=args.mode).run())
+        asyncio.run(LiveSession(client).run())
     except KeyboardInterrupt:
         log.info("Interrupted with Ctrl+C")
     except Exception:
